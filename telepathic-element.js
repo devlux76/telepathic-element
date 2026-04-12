@@ -11,10 +11,12 @@ export class TelepathicElement extends HTMLElement {
   #templateBindings = {};
   #templatePropertyNames = {};
 
+  // Read-only public accessor backed by the private field — single source of truth.
+  get initialized() { return this.#initialized; }
+
   constructor(fileName, noshadow = false, delayRender = false) {
     super();
 
-    this.initialized = false; // public for backward compat if needed
     this.delayRender = delayRender;
 
     // Shadow DOM with graceful fallback
@@ -34,8 +36,9 @@ export class TelepathicElement extends HTMLElement {
     }
   }
 
-  sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  // Allow subclasses to register async prerequisites before the first render.
+  addInitPromise(p) {
+    this.#promises.push(p);
   }
 
   async connectedCallback() {
@@ -49,7 +52,8 @@ export class TelepathicElement extends HTMLElement {
     }
 
     this.#initialized = true;
-    this.className = this.constructor.name;
+    // Add the component name as a CSS class without clobbering developer-applied classes.
+    this.classList.add(this.constructor.name);
 
     await Promise.all(this.#promises);
 
@@ -62,6 +66,16 @@ export class TelepathicElement extends HTMLElement {
     if (!this.delayRender) {
       await this.render();
       if (this.onReady) this.onReady();
+    }
+  }
+
+  disconnectedCallback() {
+    this.#unbindAll();
+  }
+
+  #unbindAll() {
+    for (const binding of Object.values(this.#templateBindings)) {
+      binding.unbind();
     }
   }
 
@@ -83,7 +97,11 @@ export class TelepathicElement extends HTMLElement {
 
   async loadTemplate(fileName) {
     if (!fileName && !this.templateFileName) {
-      // Auto-resolve based on class + tag convention (your original spirit)
+      // Auto-resolve using the tag name convention.
+      // WARNING: import.meta.url resolves relative to telepathic-element.js, not your
+      // component file. This will attempt to load templates from the library directory
+      // instead of your component directory. Always pass templateFileName explicitly
+      // in your component's constructor to avoid loading from the wrong path.
       const tagName = this.tagName.toLowerCase();
       const path = `/${tagName}/${tagName}.html`; // adjust if you have a base path
       fileName = new URL(path, import.meta.url).href;
@@ -136,6 +154,9 @@ export class TelepathicElement extends HTMLElement {
   }
 
   async compileTemplate(tags) {
+    // Unbind previous bindings before resetting to prevent duplicate event listeners
+    // when render() is called more than once (e.g. on reconnect).
+    this.#unbindAll();
     this.#templateBindings = {};
     this.#templatePropertyNames = {};
 
@@ -186,6 +207,9 @@ export class TelepathicElement extends HTMLElement {
     }
   }
 
+  // Binds a single DOM node attribute to a template tag.
+  // NOTE: Only attributes whose value is *exactly* the tag expression (e.g. value="${this.foo}")
+  // are bound. Mixed-value attributes like class="btn ${this.state}" are not supported.
   compileNodeAttributes(node, tag, property) {
     if (!node.hasAttributes()) return;
 
@@ -233,70 +257,78 @@ export class DataBind {
   constructor(source) {
     this.#value = source.object[source.property];
 
-    const valueGetter = () => this.#value;
-    const valueSetter = (val) => {
-      const oldVal = this.#value;
-      this.#value = val;
-
-      for (const binding of this.#elementBindings) {
-        try {
-          const { element, attribute } = binding;
-          if (element[attribute] !== val) {
-            if (attribute === 'class') {
-              element.classList.remove(oldVal);
-              element.classList.add(val);
-            } else if (attribute === 'innerHTML') {
-              if (val instanceof HTMLElement) {
-                element.replaceChildren(val);
-              } else {
-                element.innerHTML = val ?? '';
-              }
-            } else if (attribute === 'value') {
-              element.value = val ?? '';
-            } else {
-              element.setAttribute(attribute, val ?? '');
-            }
-          }
-        } catch (e) {
-          // silent for readonly cases as before
-        }
-      }
-    };
-
-    // Two-way listener helper
-    this.bindElement = (element, attribute, event = null) => {
-      const binding = { element, attribute };
-      if (event) {
-        element.addEventListener(event, () => {
-          valueSetter(element[attribute]);
-        });
-        binding.event = event;
-      }
-      this.#elementBindings.push(binding);
-
-      // Initial set
-      if (this.#value instanceof HTMLElement && attribute === 'innerHTML') {
-        element.replaceChildren(this.#value);
-      } else {
-        element[attribute] = this.#value ?? (attribute === 'value' ? '' : this.#value);
-      }
-
-      return this;
-    };
-
     Object.defineProperty(source.object, source.property, {
-      get: valueGetter,
-      set: valueSetter,
+      get: () => this.#value,
+      set: (val) => this.#setValue(val),
       configurable: true,
     });
 
     // Trigger initial set
     source.object[source.property] = this.#value;
   }
+
+  #setValue(val) {
+    const oldVal = this.#value;
+    this.#value = val;
+
+    for (const binding of this.#elementBindings) {
+      try {
+        const { element, attribute } = binding;
+        if (element[attribute] !== val) {
+          if (attribute === 'class') {
+            element.classList.remove(oldVal);
+            element.classList.add(val);
+          } else if (attribute === 'innerHTML') {
+            if (val instanceof HTMLElement) {
+              element.replaceChildren(val);
+            } else {
+              element.innerHTML = val ?? '';
+            }
+          } else if (attribute === 'value') {
+            element.value = val ?? '';
+          } else {
+            element.setAttribute(attribute, val ?? '');
+          }
+        }
+      } catch (e) {
+        // silent for readonly cases as before
+      }
+    }
+  }
+
+  bindElement(element, attribute, event = null) {
+    const binding = { element, attribute };
+    if (event) {
+      const handler = () => this.#setValue(element[attribute]);
+      element.addEventListener(event, handler);
+      binding.event = event;
+      binding.handler = handler;
+    }
+    this.#elementBindings.push(binding);
+
+    // Initial set
+    if (this.#value instanceof HTMLElement && attribute === 'innerHTML') {
+      element.replaceChildren(this.#value);
+    } else {
+      element[attribute] = this.#value ?? (attribute === 'value' ? '' : this.#value);
+    }
+
+    return this;
+  }
+
+  // Remove all event listeners registered by this binding.
+  unbind() {
+    for (const binding of this.#elementBindings) {
+      if (binding.event && binding.handler) {
+        binding.element.removeEventListener(binding.event, binding.handler);
+      }
+    }
+    this.#elementBindings = [];
+  }
 }
 
 // Tiny helpers (modern native)
 const uniq = (arr) => [...new Set(arr)];
-String.prototype.replaceAll = String.prototype.replaceAll || function (search, replacement) {
-  return this.split(search).join(replacement);
-};
+
+// sleep is provided as a standalone export so it doesn't pollute every component's public API.
+export const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
