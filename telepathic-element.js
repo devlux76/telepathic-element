@@ -1,361 +1,302 @@
-//import {Marked} from '../marked/lib/marked-class.mjs';
+export class TelepathicElement extends HTMLElement {
+  static describe() {
+    return `TelepathicElement provides the base class for all telepathic-elements. 
+            It is responsible for all templating and binding operations.`;
+  }
 
-export class TelepathicElement extends HTMLElement{
-    static describe(){return `TelepathicElement provides the base class for all telepathic-elements.  It is responsible for all templating and binding operations.`};
+  #templateStr = '';
+  #template = null;
+  #initialized = false;
+  #promises = [];
+  #templateBindings = {};
+  #templatePropertyNames = {};
 
-    constructor(fileName,noshadow,delayRender){
-        super();
-        this.initialized = false;
-        
-        this.promises = []; //Helps speed up loading to defer things to init in derived constructors
-        if(noshadow){
-            this.$ = this;
-        }else{
-            try{
-                this.$ = this.attachShadow({mode: 'open'});
-            }catch(err){
-                //Firefox and some others don't support shadow dom completely or at all.
-                console.debug(err);
-                this.$ = this;
-            }
+  constructor(fileName, noshadow = false, delayRender = false) {
+    super();
+
+    this.initialized = false; // public for backward compat if needed
+    this.delayRender = delayRender;
+
+    // Shadow DOM with graceful fallback
+    if (noshadow) {
+      this.$ = this;
+    } else {
+      try {
+        this.$ = this.attachShadow({ mode: 'open' });
+      } catch (err) {
+        console.debug('Shadow DOM not supported, falling back to light DOM:', err);
+        this.$ = this;
+      }
+    }
+
+    if (fileName) {
+      this.templateFileName = fileName;
+    }
+  }
+
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async connectedCallback() {
+    if (this.#initialized) {
+      try {
+        await this.render();
+      } catch (err) {
+        console.error(`Error re-rendering ${this.constructor.name}:`, err);
+      }
+      return;
+    }
+
+    this.#initialized = true;
+    this.className = this.constructor.name;
+
+    await Promise.all(this.#promises);
+
+    if (this.init) {
+      await this.init();
+    }
+
+    await this.prepareTemplate();
+
+    if (!this.delayRender) {
+      await this.render();
+      if (this.onReady) this.onReady();
+    }
+  }
+
+  async loadFile(fileName) {
+    console.debug('Loading:', fileName);
+    const response = await fetch(fileName);
+    if (!response.ok) {
+      throw new Error(`${response.status}: ${response.statusText}`);
+    }
+    return await response.text();
+  }
+
+  // Optional JSON helper (kept for convenience)
+  async loadFileJSON(fileName) {
+    const response = await fetch(fileName);
+    if (!response.ok) throw new Error(`${response.status}: ${response.statusText}`);
+    return await response.json();
+  }
+
+  async loadTemplate(fileName) {
+    if (!fileName && !this.templateFileName) {
+      // Auto-resolve based on class + tag convention (your original spirit)
+      const tagName = this.tagName.toLowerCase();
+      const path = `/${tagName}/${tagName}.html`; // adjust if you have a base path
+      fileName = new URL(path, import.meta.url).href;
+    }
+
+    const htmlFile = fileName || this.templateFileName;
+    this.#templateStr = await this.loadFile(htmlFile);
+    this.templateFileName = htmlFile;
+    console.debug('Loaded template:', this.templateFileName);
+  }
+
+  async prepareTemplate(fileName) {
+    if (!this.#templateStr) {
+      await this.loadTemplate(fileName);
+    }
+
+    this.#template = document.createElement('template');
+    this.#template.innerHTML = this.#templateStr;
+
+    // Clone into shadow/light DOM
+    this.$.appendChild(this.#template.content.cloneNode(true));
+
+    // Optional: If you still use telepathic-loader for sub-elements
+    if (window.TelepathicLoader?.Load) {
+      window.TelepathicLoader.Load(this.$);
+    }
+  }
+
+  async render() {
+    if (!this.#templateStr) return;
+
+    const tags = uniq(this.#templateStr.match(TelepathicElement.templateRegex) || []);
+    await this.compileTemplate(tags);
+    await this.setIDs();
+
+    console.debug(`${this.templateFileName} rendered`);
+  }
+
+  async setIDs() {
+    const elements = this.$.querySelectorAll('*');
+    elements.forEach((element) => {
+      const id = element.id;
+      if (id) {
+        const varname = id.replaceAll('-', '_');
+        this[varname] = element;
+        this[varname].owner = this;
+        console.debug(`Auto-assigned ${varname} on ${this.localName}`);
+      }
+    });
+  }
+
+  async compileTemplate(tags) {
+    this.#templateBindings = {};
+    this.#templatePropertyNames = {};
+
+    for (const tag of tags) {
+      let property = tag.replace(/\$\{|}/g, '').replace(/^this\./, '');
+
+      // Handle dotted paths (e.g. this.user.name)
+      if (property.includes('.')) {
+        const parts = property.split('.');
+        let obj = this;
+        for (let i = 0; i < parts.length - 1; i++) {
+          const p = parts[i];
+          if (obj[p] === undefined) obj[p] = {};
+          obj = obj[p];
         }
-        if(!this.$){
-            this.$ = this;
-        }
-        this.delayRender = delayRender;
-        this.templateBindings = {};
-        this.templatePropertyNames = {};
-        if(fileName){
-            this.templateFileName = fileName;
-        }
+        property = parts[parts.length - 1];
+        this.#templateBindings[property] = new DataBind({ object: obj, property });
+      } else {
+        if (this[property] === undefined) this[property] = undefined;
+        this.#templateBindings[property] = new DataBind({ object: this, property });
+      }
 
+      this.#templatePropertyNames[tag] = property;
     }
 
-    sleep(ms){
-        return new Promise(resolve => setTimeout(resolve, ms));
-    }
-    async connectedCallback(){
-        if(!this.initialized){
-            this.className = this.constructor.name;
-            await Promise.all(this.promises)
-            .then(async ()=>{
-                await this.prepareTemplate();
-                if(this['init']){
-                    await this.init();
-                }
-                if(!this.delayRender){
-                    await this.render();
-                    if(this.onReady){
-                        this.onReady();
-                    }
-                }
-            });
-        }else{
-            try{
-                await this.render();
-            }catch(err){
-                console.error(`Error rendering: ${this.constructor.name}`);
-                console.error(err);
-            }
+    // Replace ${} placeholders with <span data-bind="...">
+    const root = this.$;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let textNode;
+    while ((textNode = walker.nextNode())) {
+      const txt = textNode.textContent;
+      for (const tag of tags) {
+        if (txt.includes(tag)) {
+          const newNode = document.createElement('span');
+          newNode.innerHTML = txt.replaceAll(tag, `<span data-bind="${tag}"></span>`);
+          textNode.parentNode.replaceChild(newNode, textNode);
+          break; // one replacement per node for safety
         }
-    }
-    
-    async loadFile(fileName){
-        console.debug("Loading: ",fileName);
-        let response = await fetch(fileName);
-        if(response.ok){
-            return await response.text();
-        }else{
-            throw(`${response.status} : ${response.statusText}`);
-        }
+      }
     }
 
-    async loadFileJSON(fileName){
-        return await(await(fetch(fileName))).json();
+    // Compile attributes (two-way where applicable)
+    for (const tag of tags) {
+      const property = this.#templatePropertyNames[tag];
+      for (const node of this.$.querySelectorAll('*')) {
+        this.compileNodeAttributes(node, tag, property);
+      }
     }
+  }
 
-    async loadTemplate(fileName){
-        let file;
-        /*
-        let marked = new Marked();
-        if(fileName){
-            if(!window[fileName]){
-                file = await this.loadFile(fileName);
-                this.templateStr = marked.parse(file);
-                window[fileName] = this.templateStr;
-            }else{
-                this.templateStr = window[fileName];
-            }
-            this.templateFileName = fileName;
-        }else{*/
-            let path = window[this.className];
-            let tagName = this.tagName.toLowerCase();
- 
-            //We're still going to try and parse any markdown we find in the template whether it's  .md or .html
-            let htmlFile = `${path}/${tagName}/${tagName}.html`;
-            file = await this.loadFile(htmlFile);
-            this.templateStr = file;
-            this.templateFileName = htmlFile;
-       // }
-        console.debug("this.templateFileName: ",this.templateFileName);
-        //console.debug("file: ",file);
-        //console.debug("this.templateStr: ",this.templateStr);
-    }
+  compileNodeAttributes(node, tag, property) {
+    if (!node.hasAttributes()) return;
 
-    async prepareTemplate(fileName){
-        if(!this.templateStr){
-            if(fileName){
-                console.debug("Template not yet loaded for ",fileName);
-            }
-            await this.loadTemplate(fileName);
-            console.debug("Loaded ",this.templateFileName);
+    const attrs = Array.from(node.attributes);
+    for (const attr of attrs) {
+      if (attr.value !== tag) continue;
+
+      if (attr.name === 'data-bind') {
+        node.removeAttribute('data-bind');
+        if (this.#templateBindings[property]) {
+          this.#templateBindings[property] = this.#templateBindings[property].bindElement(node, 'innerHTML');
         }
-        //console.debug(`Preparing ${this.templateFileName}`);
-        let templateStr = this.templateStr;
-        this.template = document.createElement("template");
-        this.template.innerHTML =  templateStr;
-        this.$.appendChild(this.template.content.cloneNode(true));
-        //Need loader to inject here and load submodules that were hidden previously
-        window.TelepathicLoader.Load(this.$);
-    }
-
-    async render(){
-        if(this.templateStr){
-            let tags = await uniq(this.templateStr.match(TelepathicElement.templateRegex));
-            await this.compileTemplate(tags);
-            await this.setIDs();
+      } else {
+        // Two-way capable
+        const currentValue = this[property];
+        if (currentValue == null) {
+          if (attr.name !== 'value') node.setAttribute(attr.name, '');
+          else node.value = '';
+        } else {
+          if (attr.name !== 'value') node.setAttribute(attr.name, currentValue);
+          else node.value = currentValue;
         }
-        console.debug(`${this.templateFileName} is rendered`);
-    }
 
-    async setIDs(){
-        let elements = this.$.querySelectorAll("*");
-        elements.forEach((element)=>{
-            let id = element.id;
-            if(id){
-                let varname = id.replaceAll("-","_");
-                this[varname] = element;
-                this[varname].owner = this;
-                console.debug(`setting ${varname} on ${this.localName}`);
-            }
-        });
+        if (this.#templateBindings[property]) {
+          this.#templateBindings[property] = this.#templateBindings[property].bindElement(
+            node,
+            attr.name,
+            attr.name === 'value' ? 'input' : 'change' // modern: 'input' for live two-way
+          );
+        }
+      }
     }
-    compileTemplate(tags){
-        console.debug("tags: ",tags);
-        this.propertyNames = {};
-        for(let tag of tags){
-            let property = tag.replaceAll("${","").replaceAll("}","").replaceAll("this.","");
-        
-            let object = this;
-            if(property.includes(".")){
-                let properties  = property.split(".");
-                let props = [];
-                for(let i = 0; i <= properties.length -1; i++){
-                    let prop = properties[i];
-                    props.push(prop);
-                    if(object[prop] === undefined){
-                        console.debug("Found undeclared property ",props.join('.')," in template ",this);
-                        object[prop] = 'undeclared';
-                    }
-                    try{
-                        this.templateBindings[props.join(".")] = new DataBind({object: object, property: prop});
-                    }catch(err){
-                        console.debug(`Looks like you tried to bind a readonly property somewhere, if so disregard this ${err}`);
-                    }
-                    object = object[prop];
-                }
-            }else{
-                try{
-                    console.debug("About to bind "+property+": ",this[property]," to ",this.templateBindings);
-                    if(this[property]=== undefined){
-                        console.debug(property+" was undefined");
-                        this[property] = "undefined"; 
-                    }
-                    this.templateBindings[property] = new DataBind({object: this, property: property});
-                }catch(err){
-                    console.debug(`Looks like you tried to bind a readonly property somewhere, if so disregard this ${err}`);
-                }
-            }
+  }
 
-            this.templatePropertyNames[tag] = property;
-                                    
-            let root = this.$;
-            let iter = document.createNodeIterator(root, NodeFilter.SHOW_TEXT);
-            let textnode;
-            while (textnode = iter.nextNode()) {   
-                let txt = textnode.textContent;
-                if(txt.includes(tag)){
-                    let newNode = document.createElement("span");
-                    //console.debug(`Replacing ${tag} with <span data-bind='${tag}'></span>`);
-                    if(typeof tag !== HTMLElement){
-                        newNode.innerHTML = txt.replaceAll(tag,`<span data-bind='${tag}'></span>`);
-                    }else{
-                        newNode.appendChild(tag);
-                    }
-                    //console.debug("After replacement: ",newNode.innerHTML);
-                    let parentNode  = textnode.parentNode;
-                    parentNode.replaceChild(newNode,textnode);
-                    //console.debug("Parent is now: ",parentNode);
-                }
-            }
-        };
-       
-        for(let tag of tags){
-            let property = this.templatePropertyNames[tag];
-            for(let node of this.$.querySelectorAll("*")){
-                //console.debug("compiling: "+tag+" : "+property+" against ",node);
-                this.compileNodeAttributes(node, tag, property);
-            }
-        }
-    }
-  
-    compileNodeAttributes(node,tag,property){
-        if(node.hasAttributes()){
-            let attrs = node.attributes;
-            for(var i = attrs.length - 1; i >= 0; i--) {
-                let attr = attrs[i];
-                if(attr.value == tag){
-                    if(attr.name == "data-bind"){
-                        node.removeAttribute("data-bind");
-                        if(this.templateBindings[property]){
-                            //console.debug("removing data-bind =",tag," on ",node," setting bind to innerHTML property is ",property);
-                            this.templateBindings[property] = this.templateBindings[property].bindElement(node,"innerHTML"); 
-                        }else{
-                            throw("Couldn't find "+property+" on ",this.templateBindings);
-                        }
-                    }else{
-                       
-                        if(this[property] == tag && node.getAttribute(attr.name) == tag){
-                            if(attr.name != "value"){
-                                //console.debug("Clearing "+attr.name+" on ",node);
-                                node.setAttribute(attr.name,"");
-                            }else{
-                                //console.debug("Clearing value for "+attr.name+" on ",node);
-                                node.value ="";
-                            }
-                        }else{
-                            //console.debug("Setting "+attr.name+" to ",this[property]+" on ",node);
-                            node.setAttribute(attr.name,this[property]);
-                        }
-                        if(this.templateBindings[property]){            
-                            this.templateBindings[property] = this.templateBindings[property].bindElement(node,attr.name,"change");
-                        }else{
-                            throw("Couldn't find "+property+" on ",this.templateBindings);
-                        }
-                    }
-                }
-            };
-        }
-    }
+  // Static regex (unchanged spirit)
+  static templateRegex = /\$\{([^}]+)\}/g;
 }
-TelepathicElement.templateRegex = /\$\{([^\\}]*(?:\\.[^\\}]*)*)\}/g;
+
+// ====================== DataBind (modernized but API-compatible) ======================
 export class DataBind {
-    constructor(source) {
-        let _this = this;
-        
-        this.elementBindings = [];
-        this.subscribeFuncs = [];
-        this.value = source.object[source.property];
-        this.valueGetter = function () {
-            //console.debug("DataBind.valueGetter: ",_this);
-            if(typeof _this === HTMLElement){
-                return _this;
-            }else{
-                return _this.value;
-            }
-        };
-        this.valueSetter = function (val) {
-            let oldval = _this.value; 
-            _this.value = val;
-            for (let i = 0; i < _this.elementBindings.length; i++) {
-                let binding = _this.elementBindings[i];
-                try{
-                   //console.debug(binding.element," @ ",binding.attribute," was ",oldval," now ",val," type is ",(typeof val));
-                   
-                   if(binding.element[binding.attribute] !== val){
-                        if(binding.attribute == "class"){
-                            if(binding.element.classList.contains(oldval)){
-                                binding.element.classList.remove(oldval);
-                                binding.element.classList.add(val);
-                            }
-                        }else{
-                            if(binding.attribute){
-                                if(binding.attribute == "innerHTML"){// && val instanceof HTMLElement){
-                                    ////console.debug(binding.element," @ ",binding.attribute," = val.innerHTML: ",val.innerHTML.toString());
-                                    if(val instanceof HTMLElement){
-                                        let oldNode = binding.element.firstChild;
-                                        binding.element.replaceChild(val,oldNode);
-                                    }else{
-                                        binding.element.innerHTML = val;
-                                    }
-                                    //binding.element.innerHTML = val.innerHTML;
-                                    ////console.debug("afterwards - binding.element[binding.attribute] : ",binding.element[binding.attribute]);
-                                }else{
-                                    
-                                    if(binding.attribute !== "value"){
-                                        //console.debug(binding.element," @ ",binding.attribute," = ",val);
-                                        binding.element.setAttribute(binding.attribute,val);
-                                    }else{
-                                        //console.debug(binding.element," = ",val);
-                                        binding.element.value = val;
-                                    }
-                                }
-                            }else{
-                                throw("Trying to update value on empty attribute for ",binding.element," with ",_this);
+  #value;
+  #elementBindings = [];
+  #subscribeFuncs = [];
 
-                            }
-                        }
-                   }
-                }catch(error){
-                    //console.error(error);
-                }
+  constructor(source) {
+    this.#value = source.object[source.property];
+
+    const valueGetter = () => this.#value;
+    const valueSetter = (val) => {
+      const oldVal = this.#value;
+      this.#value = val;
+
+      for (const binding of this.#elementBindings) {
+        try {
+          const { element, attribute } = binding;
+          if (element[attribute] !== val) {
+            if (attribute === 'class') {
+              element.classList.remove(oldVal);
+              element.classList.add(val);
+            } else if (attribute === 'innerHTML') {
+              if (val instanceof HTMLElement) {
+                element.replaceChildren(val);
+              } else {
+                element.innerHTML = val ?? '';
+              }
+            } else if (attribute === 'value') {
+              element.value = val ?? '';
+            } else {
+              element.setAttribute(attribute, val ?? '');
             }
-        };
-        this.bindElement = function (element, attribute, event) {
-            let binding = {
-                element: element,
-                attribute: attribute
-            };
-            if (event) {
-                element.addEventListener(event, function (event) {
-                    _this.valueSetter(element[attribute]);
-                });
-                binding.event = event;
-            }
-            this.elementBindings.push(binding);
-            if(_this instanceof HTMLElement){
-                //console.error("_this is HTMLElement ",_this);                
-            }
-            if(element instanceof HTMLElement && _this.value instanceof HTMLElement){
-                //console.error(" element is HTMLElement ",element);
-                //console.error("_this.value is ",_this.value);
-                let oldNode = element.firstChild;
-                //console.debug("oldNode: ",oldNode);
-                if(oldNode){
-                    element.replaceChild(_this.value,oldNode);
-                }else{
-                    element.appendChild(_this.value);
-                }
-                
-            }else{
-                element[attribute] = _this.value;
-            }
-            if(!event){
-                event = "*"
-            }
-            //console.debug("Binding ",element," @ ",attribute," : ",event," to ",this);
-            return _this;
-        };
-        Object.defineProperty(source.object, source.property, {
-            get: this.valueGetter,
-            set: this.valueSetter
+          }
+        } catch (e) {
+          // silent for readonly cases as before
+        }
+      }
+    };
+
+    // Two-way listener helper
+    this.bindElement = (element, attribute, event = null) => {
+      const binding = { element, attribute };
+      if (event) {
+        element.addEventListener(event, () => {
+          valueSetter(element[attribute]);
         });
-        source.object[source.property] = this.value;
-    }
+        binding.event = event;
+      }
+      this.#elementBindings.push(binding);
+
+      // Initial set
+      if (this.#value instanceof HTMLElement && attribute === 'innerHTML') {
+        element.replaceChildren(this.#value);
+      } else {
+        element[attribute] = this.#value ?? (attribute === 'value' ? '' : this.#value);
+      }
+
+      return this;
+    };
+
+    Object.defineProperty(source.object, source.property, {
+      get: valueGetter,
+      set: valueSetter,
+      configurable: true,
+    });
+
+    // Trigger initial set
+    source.object[source.property] = this.#value;
+  }
 }
-//Adding this here because there's no other good place to put it
-String.prototype.replaceAll = function(search, replacement) {
-    let target = this;
-    return target.split(search).join(replacement);
+
+// Tiny helpers (modern native)
+const uniq = (arr) => [...new Set(arr)];
+String.prototype.replaceAll = String.prototype.replaceAll || function (search, replacement) {
+  return this.split(search).join(replacement);
 };
-const uniq = (a) => Array.from(new Set(a));
