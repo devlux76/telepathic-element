@@ -7,12 +7,16 @@ export class TelepathicElement extends HTMLElement {
   #templateStr = '';
   #template = null;
   #initialized = false;
+  #initializingPromise = null;
   #promises = [];
   #templateBindings = {};
   #templatePropertyNames = {};
 
-  // Read-only public accessor backed by the private field — single source of truth.
+  // Public accessor backed by the private field — single source of truth.
+  // The setter is a no-op so that legacy consumer code assigning this.initialized
+  // does not throw a TypeError.
   get initialized() { return this.#initialized; }
+  set initialized(_) { /* no-op: state is managed internally via #initialized */ }
 
   constructor(fileName, noshadow = false, delayRender = false) {
     super();
@@ -43,6 +47,13 @@ export class TelepathicElement extends HTMLElement {
 
   async connectedCallback() {
     if (this.#initialized) {
+      // If the first initialization is still in-flight (e.g. rapid disconnect/reconnect),
+      // wait for it to complete before attempting a re-render so the element is fully
+      // prepared before render() runs. Ignore any init error here — the initiating
+      // call already logged it and reset state.
+      if (this.#initializingPromise) {
+        try { await this.#initializingPromise; } catch { /* handled by initiating call */ }
+      }
       try {
         await this.render();
       } catch (err) {
@@ -52,6 +63,21 @@ export class TelepathicElement extends HTMLElement {
     }
 
     this.#initialized = true;
+    // Track the initialization promise so any reconnect that races with async init
+    // can await it before proceeding to re-render.
+    this.#initializingPromise = this.#initialize();
+    try {
+      await this.#initializingPromise;
+    } catch (err) {
+      // Reset so a future reconnect can retry initialization from scratch.
+      this.#initialized = false;
+      console.error(`Error initializing ${this.constructor.name}:`, err);
+    } finally {
+      this.#initializingPromise = null;
+    }
+  }
+
+  async #initialize() {
     // Add the component name as a CSS class without clobbering developer-applied classes.
     this.classList.add(this.constructor.name);
 
@@ -97,11 +123,13 @@ export class TelepathicElement extends HTMLElement {
 
   async loadTemplate(fileName) {
     if (!fileName && !this.templateFileName) {
-      // Auto-resolve using the tag name convention.
-      // WARNING: import.meta.url resolves relative to telepathic-element.js, not your
-      // component file. This will attempt to load templates from the library directory
-      // instead of your component directory. Always pass templateFileName explicitly
-      // in your component's constructor to avoid loading from the wrong path.
+      // Auto-resolve to the origin root using the tag name convention, e.g.:
+      //   /my-component/my-component.html
+      // NOTE: Because the path begins with '/', the base URL supplied by
+      // import.meta.url has no effect — the template is always fetched from
+      // the origin root, not relative to this library file or your component.
+      // Pass templateFileName explicitly in your component's constructor if
+      // your templates live elsewhere.
       const tagName = this.tagName.toLowerCase();
       const path = `/${tagName}/${tagName}.html`; // adjust if you have a base path
       fileName = new URL(path, import.meta.url).href;
@@ -276,8 +304,14 @@ export class DataBind {
         const { element, attribute } = binding;
         if (element[attribute] !== val) {
           if (attribute === 'class') {
-            element.classList.remove(oldVal);
-            element.classList.add(val);
+            // Split on whitespace to handle multi-class strings while preserving
+            // any other classes on the element that are not managed by this binding.
+            if (oldVal) {
+              for (const c of oldVal.split(/\s+/).filter(Boolean)) element.classList.remove(c);
+            }
+            if (val) {
+              for (const c of val.split(/\s+/).filter(Boolean)) element.classList.add(c);
+            }
           } else if (attribute === 'innerHTML') {
             if (val instanceof HTMLElement) {
               element.replaceChildren(val);
