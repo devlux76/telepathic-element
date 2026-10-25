@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>telepathic-element browser tests</title>
+  <link rel="icon" href="data:,">
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; margin: 1rem; }
+    #summary { font-size: 1.2rem; font-weight: bold; }
+    .pass { color: #059669; }
+    .fail { color: #dc2626; white-space: pre-wrap; }
+    #sandbox, #frames { position: absolute; left: -10000px; top: 0; width: 800px; }
+    #frames iframe { width: 800px; height: 900px; }
+  </style>
+</head>
+<body>
+  <h1>telepathic-element — real-browser tests</h1>
+  <div id="summary">running…</div>
+  <ol id="results"></ol>
+  <div id="sandbox"></div>
+  <div id="frames"></div>
+  <script type="module" src="./tests.js"></script>
+</body>
+</html>

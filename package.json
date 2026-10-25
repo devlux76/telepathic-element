@@ -1,0 +1,16 @@
+{
+  "name": "telepathic-element",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "test:browser": "bun test/browser/run.js",
+    "build": "bun run build.js",
+    "serve": "bun test/browser/server.js"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "happy-dom": "^20.10.6",
+    "jsdom": "^29.1.1"
+  }
+}

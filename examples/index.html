@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>telepathic-element v2 demo</title>
+  <link rel="icon" href="data:,">
+  <style>
+    body { font-family: var(--font-sans, system-ui, sans-serif); background: var(--color-bg); color: var(--color-text); max-width: 700px; margin: 2rem auto; padding: 0 1rem; }
+    .chat { border: 1px solid var(--color-border, #e5e7eb); border-radius: 0.5rem; padding: 1rem; margin-top: 1rem; }
+    .chat h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }
+  </style>
+</head>
+<body>
+  <h1>telepathic-element v2</h1>
+  <p>Minimal demo: component binding (try the input and checkbox) + streaming markdown + tokens.<br>
+  Serve the repo root (e.g. <code>bun run serve</code>) and open <code>/examples/</code>.</p>
+
+  <hello-world></hello-world>
+
+  <div class="chat">
+    <h2>Markdown Renderer</h2>
+    <div id="markdown-output"></div>
+  </div>
+
+  <script type="module" src="./hello-world.js"></script>
+  <script type="module">
+    import { MarkdownRenderer } from '../markdown.js';
+    import { applyTokens } from '../tokens.js';
+
+    applyTokens(); // tokens for the page itself
+
+    const output = document.getElementById('markdown-output');
+    const md = new MarkdownRenderer(output);
+
+    const chunks = [
+      '## Live Streaming\n\n',
+      'This is **bold** and *italic*.\n\n',
+      '```js\nconst x = 42;\nconsole.log(x);\n```\n\n',
+      '- Item one\n- Item two\n- Item three\n\n',
+      '[Example](https://example.com)\n\n',
+      '| Name | Value |\n|------|-------|\n| foo | 1 |\n| bar | 2 |\n\n',
+      '> This is a quote with `inline code`.\n\n',
+    ];
+
+    let i = 0;
+    function stream() {
+      if (i < chunks.length) {
+        md.append(chunks[i++]);
+        setTimeout(stream, 200); // simulates deltas arriving from a server
+      } else {
+        md.flush();
+        output.dataset.streamed = 'done';
+      }
+    }
+    stream();
+  </script>
+</body>
+</html>

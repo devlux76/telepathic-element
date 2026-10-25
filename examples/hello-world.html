@@ -1,0 +1,11 @@
+<style>
+  :host { display: block; font-family: var(--font-sans); color: var(--color-text); }
+  h2 { color: var(--color-primary); margin: 0 0 var(--space-2); }
+  .loud { text-transform: uppercase; font-weight: bold; }
+  input[type=text] { font: inherit; padding: var(--space-1) var(--space-2); }
+</style>
+<h2 id="title">${this.greeting}</h2>
+<p>Timer: ${this.count}s</p>
+<label>Name: <input id="name-input" type="text" value="${this.name}"></label>
+<label><input id="loud-box" type="checkbox" checked="${this.loud}"> loud</label>
+<p id="greeting-line" class="${this.tone}">Hello, <strong>${this.name}</strong>! Loud: ${this.loud}</p>
